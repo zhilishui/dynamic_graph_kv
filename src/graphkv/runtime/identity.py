@@ -22,10 +22,12 @@ def _digest(value: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class LayoutSpec:
-    """The structural inputs that determine whether an agent state is reusable.
+    """The structural inputs that define an agent-state namespace.
 
     Request values are deliberately absent. A predecessor's message may change
-    while its placeholder and surrounding prompt layout remain stable.
+    while its placeholder and surrounding prompt layout remain stable. A
+    runtime must separately enforce the value-compatibility rule required by
+    its cache mechanism.
     """
 
     model: str

@@ -9,17 +9,20 @@ share an independent GraphKV server, exercising serialization and TCP transfer.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import platform
 import statistics
+import subprocess
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from graphkv.metrics import JsonlMetricWriter
+from graphkv.metrics import JsonlMetricWriter, summarize_result_file
 from graphkv.runtime import (
     DynamicKVRuntime,
     MemoryStateStore,
@@ -73,6 +76,28 @@ def synchronize(torch: object, device: str) -> None:
         torch.cuda.synchronize()
 
 
+def git_commit() -> str | None:
+    """Return the source revision without making Git a runtime requirement."""
+
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def repository_path(path: Path) -> str:
+    """Use portable repository-relative provenance paths when possible."""
+
+    try:
+        return str(path.resolve().relative_to(REPO.resolve()))
+    except ValueError:
+        return str(path)
+
+
 def main() -> None:
     args = parser().parse_args()
     try:
@@ -124,9 +149,13 @@ def main() -> None:
         store = MemoryStateStore(max_bytes=4 << 30)
 
     trace = load_topology_trace(args.trace)
+    resolved_revision = getattr(config, "_commit_hash", None)
+    model_identity = (
+        f"{args.model}@{resolved_revision}" if resolved_revision else args.model
+    )
     runtime = DynamicKVRuntime(
         store,
-        model=args.model,
+        model=model_identity,
         policy=Policy(args.policy),
         placement=args.placement,
     )
@@ -254,7 +283,7 @@ def main() -> None:
             "transformers": __import__("transformers").__version__,
             "model": args.model,
             "requested_model_revision": args.model_revision,
-            "resolved_model_revision": getattr(config, "_commit_hash", None),
+            "resolved_model_revision": resolved_revision,
         },
         "samples": len(samples),
         "decisions": {
@@ -292,7 +321,31 @@ def main() -> None:
             else 0.0,
         },
         "manager_stats": runtime.stats(),
+        "provenance": {
+            "created_at_utc": datetime.now(UTC).isoformat(),
+            "git_commit": git_commit(),
+            "benchmark_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "trace": repository_path(args.trace),
+            "trace_sha256": hashlib.sha256(args.trace.read_bytes()).hexdigest(),
+            "output": repository_path(args.output),
+        },
+        "parameters": {
+            "device": args.device,
+            "prompt_tokens": args.prompt_tokens,
+            "repetitions": args.repetitions,
+            "placement": args.placement,
+            "policy": args.policy,
+            "warmup": args.warmup,
+            "attn_implementation": args.attn_implementation,
+            "server": args.server,
+        },
+        "result_summary": {
+            **summarize_result_file(args.output),
+            "path": repository_path(args.output),
+        },
     }
+    summary_path = args.output.with_suffix(".summary.json")
+    summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"summary": summary}, indent=2))
 
 

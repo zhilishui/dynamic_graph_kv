@@ -6,5 +6,11 @@ __pycache__/
 .hf-cache/
 build/
 dist/
-results/
+results/*
+!results/gpu-reset.jsonl
+!results/gpu-reset.summary.json
+!results/gpu-whole_graph.jsonl
+!results/gpu-whole_graph.summary.json
+!results/gpu-local_layout.jsonl
+!results/gpu-local_layout.summary.json
 *.log
