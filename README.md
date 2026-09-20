@@ -52,6 +52,42 @@ DynamicCache codec <-------------- versioned state bytes
 The safety rule is simple: an invocation may only load state stored under its
 exact layout identity. Unknown or incompatible layouts recompute.
 
+### Why use a TCP state server?
+
+The TCP server is a mechanism-validation layer, not the research contribution
+and not a performance model of a production network. Keeping all states in one
+Python dictionary would avoid the main distributed-systems boundary: objects
+would remain in one address space and would require neither a wire format nor
+an explicit remote lookup. The independent server forces GraphKV to execute a
+real cross-process state path:
+
+```text
+worker produces GPU KV state
+        -> serialize tensors into a CPU byte payload
+        -> publish the payload over TCP
+        -> retain it in an independent process
+        -> fetch it over TCP from another logical worker
+        -> deserialize and copy tensors back to the GPU
+```
+
+This path validates state identity, remote lookup, versioned storage,
+serialization, transfer, restoration, and the distinction between local hit,
+remote hit, and recomputation. It also exposes costs that token-count analysis
+cannot capture. In the corrected preliminary run, local-layout identity reduced
+dense prefills from seven to five, but it did not reduce observed latency over
+complete-graph isolation because the few miss, serialization, and synchronous
+publication measurements were variable and expensive. Reuse is therefore not
+automatically beneficial; a complete runtime must eventually compare remote
+transfer cost with recomputation cost.
+
+The current server runs on `127.0.0.1`, while the two logical serving instances
+share one model process and one physical GPU. It proves that the control and
+data path works across a process boundary, but it does not reproduce a physical
+cluster network, independent GPU workers, congestion, RDMA, or GPUDirect. The
+project's contribution is the layout-validity and reuse decision above this
+transport. The TCP store can later be replaced by LMCache, Mooncake, or another
+data plane without changing that decision boundary.
+
 ## Quick start: CPU control plane
 
 The package itself has no mandatory dependencies:
@@ -207,18 +243,26 @@ python scripts/run_gpu_benchmark.py \
 
 Stop and restart the server before measuring another policy or repeating the
 same policy. Results are JSON Lines and include the decision, layout, payload
-size, dense-prefill time, acquisition time, and CPU-to-GPU restore time.
+size, dense-prefill time, acquisition time, CPU-to-GPU restore time, and two
+clearly separated readiness metrics.
 `round_robin` changes a role's logical serving instance across requests, so a
 recurring layout exercises a real TCP remote hit; `stable` measures local
 recurrence. The benchmark fails early if CUDA is not visible instead of
 silently falling back to CPU.
 
-`critical_path_ms` is defined according to the actual state location: a miss
-uses the freshly computed GPU cache without decoding it again, a local hit uses
-the instance's GPU-resident object, and a remote hit includes TCP acquisition
-plus CPU-to-GPU restoration. Synchronous publication overhead is reported
-separately rather than incorrectly charging serialization to current-state
-readiness.
+`observed_state_ready_ms` is the primary implementation metric. It measures
+wall-clock time from immediately before `manager.acquire()` until the selected
+or reconstructed state is available to the caller on the GPU. In the current
+synchronous prototype, a miss includes prefill, serialization, and publication
+to the TCP server; a remote hit includes TCP retrieval, deserialization, and
+CPU-to-GPU copy; and a local hit includes lookup and GPU-state selection.
+
+`modeled_state_ready_ms` is a secondary analytical metric. For a miss it counts
+only dense prefill, modeling a future implementation that makes publication
+asynchronous. It must not be presented as the observed latency of the current
+implementation. `synchronous_publication_ms` reports the miss-path work omitted
+by that model. The summarizer computes p95 using the empirical nearest-rank
+method, selecting rank `ceil(0.95 * N)`.
 
 ### Validated test environment
 
@@ -239,9 +283,8 @@ The preliminary result files were produced with the following environment:
 | Model | Qwen/Qwen2.5-0.5B-Instruct, FP16 |
 | Model revision | `7ae557604adf67be50417f59c2c2f167def9a775` |
 | Attention implementation | eager |
-| Code used for reported measurements | commit `b4285f3` |
 | Benchmark parameters | 512 tokens, batch 1, 2 warm-ups, 3 repetitions |
-| State service | `127.0.0.1:7648`, localhost TCP, 4-GiB CPU-store limit |
+| State service | `127.0.0.1:7648`, localhost TCP, 1-GiB CPU-store limit |
 
 The two logical serving instances shared one physical GPU and one loaded model
 in this experiment. The table describes the machine used for the published

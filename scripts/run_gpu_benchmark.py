@@ -172,8 +172,11 @@ def main() -> None:
                             "layout_digest": current_layout.digest,
                             "input_ids": current_ids,
                         }
+                        if args.policy == Policy.RESET.value:
+                            return b""
                         return codec.encode(computed_state)
 
+                    state_ready_started = time.perf_counter_ns()
                     acquired = manager.acquire(
                         layout,
                         request_id=f"{repetition}-{request_index}",
@@ -186,10 +189,10 @@ def main() -> None:
                         assert computed_state is not None
                         active_state = computed_state
                         gpu_states[instance][acquired.key] = active_state
-                        critical_path_ns = dense_ns
+                        modeled_state_ready_ns = dense_ns
                     elif acquired.decision.value == "local_hit":
                         active_state = gpu_states[instance][acquired.key]
-                        critical_path_ns = acquired.elapsed_ns
+                        modeled_state_ready_ns = acquired.elapsed_ns
                     else:
                         restore_started = time.perf_counter_ns()
                         active_state = codec.decode(
@@ -198,7 +201,11 @@ def main() -> None:
                         synchronize(torch, args.device)
                         restore_ns = time.perf_counter_ns() - restore_started
                         gpu_states[instance][acquired.key] = active_state
-                        critical_path_ns = acquired.elapsed_ns + restore_ns
+                        modeled_state_ready_ns = acquired.elapsed_ns + restore_ns
+
+                    observed_state_ready_ns = (
+                        time.perf_counter_ns() - state_ready_started
+                    )
 
                     if active_state["layout_digest"] != layout.digest:
                         raise RuntimeError("loaded state belongs to the wrong layout")
@@ -221,7 +228,8 @@ def main() -> None:
                         "acquire_ms": acquired.elapsed_ns / 1e6,
                         "dense_prefill_ms": dense_ns / 1e6,
                         "restore_ms": restore_ns / 1e6,
-                        "critical_path_ms": critical_path_ns / 1e6,
+                        "observed_state_ready_ms": observed_state_ready_ns / 1e6,
+                        "modeled_state_ready_ms": modeled_state_ready_ns / 1e6,
                         "synchronous_publication_ms": max(
                             0.0, (acquired.elapsed_ns - dense_ns) / 1e6
                         )
@@ -256,9 +264,17 @@ def main() -> None:
         "median_restore_ms": statistics.median(
             float(sample["restore_ms"]) for sample in samples
         ),
-        "median_critical_path_ms_by_decision": {
+        "median_observed_state_ready_ms_by_decision": {
             decision: statistics.median(
-                float(sample["critical_path_ms"])
+                float(sample["observed_state_ready_ms"])
+                for sample in samples
+                if sample["decision"] == decision
+            )
+            for decision in sorted({str(sample["decision"]) for sample in samples})
+        },
+        "median_modeled_state_ready_ms_by_decision": {
+            decision: statistics.median(
+                float(sample["modeled_state_ready_ms"])
                 for sample in samples
                 if sample["decision"] == decision
             )

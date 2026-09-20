@@ -15,26 +15,38 @@ the final course-project evaluation.
 - KV payload: 6,309,443 bytes per 512-token state
 - Peak allocated GPU memory: at most 1,306 MiB
 
-For a cache miss, `critical_path_ms` is the actual dense prefill time because
-the newly generated state is already on the GPU. Publication/serialization is
-reported separately. For a remote hit, the critical path includes TCP fetch,
-deserialization, and CPU-to-GPU restoration. A local hit uses the logical
-instance's GPU-resident state.
+`observed_state_ready_ms` measures the current implementation's wall-clock time
+from immediately before state acquisition until the state is available to the
+caller on the GPU. A miss includes prefill, serialization, and synchronous TCP
+publication. A remote hit includes TCP fetch, deserialization, and CPU-to-GPU
+restoration. A local hit uses the logical instance's GPU-resident state.
+
+`modeled_state_ready_ms` is reported separately for analysis. On a miss, it
+counts only dense prefill and therefore models a future asynchronous
+publication path; it is not the observed latency of this prototype. Percentile
+values use the empirical nearest-rank definition.
 
 ## Results
 
-| Policy | Recompute | Remote hit | Local hit | Mean critical path | Total critical path |
+| Policy | Recompute | Remote hit | Local hit | Mean observed ready time | Total observed ready time |
 |---|---:|---:|---:|---:|---:|
-| Reset per request | 33 | 0 | 0 | 48.085 ms | 1586.812 ms |
-| Whole-graph isolation | 7 | 7 | 19 | 14.686 ms | 484.648 ms |
-| Agent-local layout identity | 5 | 5 | 23 | 11.315 ms | 373.405 ms |
+| Reset per request | 33 | 0 | 0 | 63.982 ms | 2,111.406 ms |
+| Whole-graph isolation | 7 | 7 | 19 | 34.003 ms | 1,122.083 ms |
+| Agent-local layout identity | 5 | 5 | 23 | 36.192 ms | 1,194.345 ms |
 
 All 99 state acquisitions passed embedded layout-identity and prompt-token
-checks. Under the layout policy, the median miss path was 47.707 ms and the
-median localhost remote-hit path was 20.890 ms. On this short trace, local
-layout identity eliminated two additional prefills relative to whole-graph
-isolation and reduced summed critical-path time by 23.0%. It reduced summed
-time by 76.5% relative to reset.
+checks. Under the layout policy, the median observed miss path was 197.885 ms,
+the median localhost remote-hit path was 27.398 ms, and the median local-hit
+path was 0.062 ms. On this short trace, local layout identity eliminated two
+additional prefills relative to whole-graph isolation. However, its summed
+observed state-ready time was 6.4% higher than whole-graph isolation because
+the small number of miss and publication measurements varied substantially.
+
+Nearest-rank observed p95 was 145.747 ms for reset, 239.574 ms for whole-graph
+isolation, and 277.285 ms for local-layout identity. The layout policy therefore
+did not improve observed mean, total, or p95 latency over whole-graph isolation
+in this run. Multiple independent, counterbalanced trials are required before
+making a latency claim.
 
 ## Interpretation and limits
 
@@ -54,4 +66,3 @@ does **not** yet establish the final research claim:
 The next experiments must integrate the identity into KVCOMM, use benchmark
 tasks and generated graph traces, compare output accuracy, vary topology churn
 and prompt length, and include confidence intervals across repeated trials.
-

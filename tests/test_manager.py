@@ -84,6 +84,17 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(result.decision, Decision.REMOTE_REJECTED)
         self.assertEqual(result.payload, b"new")
 
+    def test_reset_does_not_publish_unreusable_state(self) -> None:
+        store = MemoryStateStore()
+        manager = LayoutStateManager(store, policy=Policy.RESET)
+        result = manager.acquire(
+            layout(("A",)), request_id="1", graph_digest="g", compute=lambda: b"state"
+        )
+        self.assertEqual(result.decision, Decision.RECOMPUTE)
+        self.assertEqual(result.version, 0)
+        self.assertEqual(store.stats()["entries"], 0)
+        self.assertEqual(manager.stats.bytes_stored, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

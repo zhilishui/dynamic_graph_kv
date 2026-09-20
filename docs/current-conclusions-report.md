@@ -48,6 +48,43 @@ optimization study: it defines state identity and validity, coordinates state
 between independent processes, handles version conflicts, and makes online
 reuse-versus-recompute decisions.
 
+## Role of the TCP Prototype
+
+The TCP state server is validation infrastructure, not the project's proposed
+novelty. An in-process dictionary could demonstrate that two equal keys retrieve
+the same Python object, but it would bypass the distributed-systems boundary.
+An independent server requires the prototype to turn GPU state into an explicit
+wire payload, publish it outside the worker's address space, locate it by a
+stable identity, and reconstruct it for another logical worker:
+
+```text
+GPU DynamicCache
+    -> CPU serialization
+    -> TCP publication
+    -> independent CPU-memory store
+    -> TCP retrieval
+    -> deserialization and CPU-to-GPU restoration
+```
+
+This implementation makes three system costs observable: local lookup, remote
+transfer and restoration, and recomputation. That distinction matters because
+a policy that increases the number of reusable states does not necessarily
+reduce latency. In the corrected preliminary run, agent-local layout identity
+reduced dense prefills from seven to five relative to complete-graph isolation,
+but its observed total and p95 state-readiness times were not lower. The small
+number of synchronous serialization and publication observations varied enough
+to outweigh the saved prefills in that run. The result motivates, but does not
+yet validate, a cost-aware choice between remote reuse and recomputation.
+
+The current experiment uses localhost TCP. Its two logical serving instances
+share one model process and one physical RTX 4060; only the state server is an
+independent process. The experiment therefore validates a real cross-process
+protocol and real tensor movement, but it cannot establish cross-machine
+bandwidth, independent-worker contention, RDMA performance, or cluster-scale
+throughput. The research contribution remains the identity and validity rule
+for dynamic graphs. TCP is a replaceable data plane that can later be mapped to
+LMCache, Mooncake, or another state-transfer system.
+
 ## Preliminary Experimental Setup
 
 The experiment used the following configuration:
@@ -61,11 +98,11 @@ The experiment used the following configuration:
 - data path: an independent state server over localhost TCP; and
 - serialized KV-state size: 6,309,443 bytes per state.
 
-The maximum allocated GPU memory was approximately 1,306 MiB. A cache miss
-measures real transformer prefill. A remote hit includes TCP retrieval,
-deserialization, and CPU-to-GPU restoration. A local hit uses GPU-resident
-state. Synchronous publication cost is recorded separately because it is not
-on the current request's state-readiness path.
+The maximum allocated GPU memory was approximately 1,306 MiB. The primary
+latency metric measures the current synchronous implementation: a cache miss
+includes real transformer prefill, serialization, and publication; a remote
+hit includes TCP retrieval, deserialization, and CPU-to-GPU restoration; and a
+local hit selects GPU-resident state.
 
 ## Results
 
@@ -112,49 +149,58 @@ had not changed, even though another part of the graph had changed. It
 therefore reduced dense prefills from seven to five and increased GPU-local
 hits from 19 to 23.
 
-### Time required to make the KV state ready
+### Observed time required to make the KV state ready
 
-| Policy | Average per invocation | p95 per invocation | Sum across 33 invocations |
+| Policy | Average per invocation | Nearest-rank p95 | Sum across 33 invocations |
 |---|---:|---:|---:|
-| Reset per request | 48.085 ms | 67.262 ms | 1,586.812 ms |
-| Complete-graph isolation | 14.686 ms | 44.951 ms | 484.648 ms |
-| Agent-local layout identity | 11.315 ms | 47.707 ms | 373.405 ms |
+| Reset per request | 63.982 ms | 145.747 ms | 2,111.406 ms |
+| Complete-graph isolation | 34.003 ms | 239.574 ms | 1,122.083 ms |
+| Agent-local layout identity | 36.192 ms | 277.285 ms | 1,194.345 ms |
 
 These columns measure **state-readiness time**, not full request latency:
 
 - **Average** is the mean time required to obtain a valid state across all 33
   invocations.
-- **p95** is a tail measurement: 95% of the observed invocations completed
-  their state-acquisition path within this time.
+- **Nearest-rank p95** sorts all observations and selects one-based rank
+  `ceil(0.95 * 33) = 32`.
 - **Sum** adds the state-readiness time of all 33 invocations and is useful for
   comparing how much work the complete trace required.
 
-The measurement ends when the KV state is ready on the GPU. It does not include
-subsequent token generation, the rest of the multi-agent workflow, or final
-answer generation. It is therefore neither full TTFT nor end-to-end request
-latency.
+The timer starts immediately before `manager.acquire()` and ends after the
+selected or reconstructed state is available to its caller on the GPU. For a
+miss, it includes dense prefill, serialization, and synchronous publication to
+the state server. For a remote hit, it includes TCP retrieval, deserialization,
+and CPU-to-GPU restoration. For a local hit, it includes lookup and selection
+of the GPU-resident state. It does not include subsequent token generation,
+the rest of the multi-agent workflow, or final answer generation. It is
+therefore neither full TTFT nor end-to-end request latency.
 
 All 99 state acquisitions passed the embedded layout-identity and prompt-token
-checks. Under the layout-aware policy, a dense prefill took 47.707 ms at the
-median, while a localhost remote hit took 20.890 ms. A GPU-local hit took
-approximately 0.002 ms at the state-manager boundary.
+checks. Under the layout-aware policy, the median observed miss path was
+197.885 ms, while the median localhost remote-hit path was 27.398 ms. The
+median GPU-local path was 0.062 ms.
+
+The benchmark also records `modeled_state_ready_ms` as a secondary metric. For
+a miss, this value counts only dense prefill and models a future design in
+which state publication is asynchronous. It is not used as the primary latency
+result because publication is synchronous in the current implementation.
 
 For this trace, agent-local layout identity:
 
 - eliminated two of the seven dense prefills required by complete-graph
   isolation;
-- reduced summed state-readiness time by 23.0% relative to complete-graph
-  isolation; and
-- reduced summed state-readiness time by 76.5% relative to resetting state for
-  every request.
+- increased GPU-local hits from 19 to 23; but
+- produced 6.4% higher summed observed state-readiness time than complete-graph
+  isolation in this run.
 
-The p95 result requires caution. Layout-aware reuse produced a slightly higher
-p95 than complete-graph isolation: 47.707 ms versus 44.951 ms. This is not
-inconsistent with its lower mean and summed time. The trace contains only 33
-invocations per policy, and the relatively few dense prefills have normal
-runtime variation. The current data therefore support a reduction in repeated
-prefill work and aggregate state-readiness time, but they do not demonstrate a
-general tail-latency improvement.
+The latency result requires caution. Layout-aware reuse produced a higher p95
+than complete-graph isolation: 277.285 ms versus 239.574 ms. Its relatively few
+miss, serialization, and synchronous-publication observations also took longer
+in this run. With only 33 invocations per policy and a fixed policy execution
+order, these differences cannot separate policy effects from runtime
+variation. The current data support a reduction in repeated prefill work, but
+they do not yet demonstrate an observed mean, aggregate, or tail-latency
+improvement over complete-graph isolation.
 
 ## Conclusions Supported by the Current Evidence
 
@@ -222,9 +268,10 @@ Consequently, the defensible current claim is:
 > The prototype demonstrates that agent-local prompt layouts can remain safely
 > reusable when the complete multi-agent graph changes. On one RTX 4060 and a
 > small controlled trace, layout-granular state management reduced redundant
-> dense prefills and summed state-readiness time relative to complete-graph
-> isolation. A full KVCOMM integration and broader task-level evaluation are
-> still required to determine the general end-to-end benefit.
+> dense prefills relative to complete-graph isolation, but it did not improve
+> observed latency in the corrected single run. Repeated counterbalanced
+> trials, full KVCOMM integration, and broader task-level evaluation are still
+> required to determine the general end-to-end benefit.
 
 ## Work Required for the Final Conclusion
 

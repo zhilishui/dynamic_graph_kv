@@ -99,6 +99,21 @@ class LayoutStateManager:
     ) -> AccessResult:
         key = self.state_key(layout, request_id=request_id, graph_digest=graph_digest)
         started = time.perf_counter_ns()
+        if self.policy == Policy.RESET:
+            compute_started = time.perf_counter_ns()
+            payload = bytes(compute())
+            compute_ns = time.perf_counter_ns() - compute_started
+            self.stats.recomputes += 1
+            self.stats.compute_ns += compute_ns
+            return AccessResult(
+                Decision.RECOMPUTE,
+                key,
+                payload,
+                time.perf_counter_ns() - started,
+                0,
+                0,
+            )
+
         local = self._local.get(key)
         if local is not None:
             self._touch(key)
