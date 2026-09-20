@@ -21,11 +21,12 @@ store:
 - a versioned, byte-bounded local LRU store;
 - a real length-prefixed TCP store for independent serving processes;
 - local-hit, remote-hit, miss, and remote-rejected decisions;
-- a codec for KVCOMM's Hugging Face `DynamicCache` tensors;
+- a codec for Hugging Face `DynamicCache` tensors, the representation used by
+  the current smoke benchmark and KVCOMM;
 - a CPU demo and an RTX-4060-sized real-model benchmark.
 
 LMCache and Mooncake remain candidate production data planes. The first
-prototype uses a small explicit store so the layout-validity mechanism can be
+prototype uses a small explicit store so the layout namespace and control path can be
 tested without RDMA, a cluster, or a particular inference engine. The
 `DynamicCacheCodec` is the integration boundary that a later LMCache backend
 can reuse.
@@ -46,8 +47,12 @@ topology generator / saved JSONL trace
           JSONL metric system
 ```
 
-The safety rule is simple: an invocation may only load state stored under its
-exact layout identity. Unknown or incompatible layouts recompute.
+The layout identity defines a structural namespace, not by itself permission to
+reuse arbitrary full KV tensors. The current exact-cache benchmark also checks
+that prompt token IDs match before inference and aborts on a mismatch. The
+planned KVCOMM integration will use the namespace to scope prefixes,
+placeholders, and anchors when message values differ, with output agreement as
+the safety test.
 
 The code follows the same three-component boundary:
 
@@ -82,20 +87,20 @@ worker produces GPU KV state
 This path validates state identity, remote lookup, versioned storage,
 serialization, transfer, restoration, and the distinction between local hit,
 remote hit, and recomputation. It also exposes costs that token-count analysis
-cannot capture. In the corrected preliminary run, local-layout identity reduced
-dense prefills from seven to five, but it did not reduce observed latency over
-complete-graph isolation because the few miss, serialization, and synchronous
-publication measurements were variable and expensive. Reuse is therefore not
-automatically beneficial; a complete runtime must eventually compare remote
-transfer cost with recomputation cost.
+cannot capture. In the current preliminary run, local-layout identity reduced
+dense prefills from seven to five but increased summed observed state-readiness
+time by 8.2% relative to complete-graph isolation; its p95 was also higher.
+Results varied substantially across preliminary runs. Reuse is therefore not
+automatically beneficial; repeated, counterbalanced trials and a
+transfer-versus-recompute decision are still required.
 
 The current server runs on `127.0.0.1`, while the two logical serving instances
 share one model process and one physical GPU. It proves that the control and
 data path works across a process boundary, but it does not reproduce a physical
 cluster network, independent GPU workers, congestion, RDMA, or GPUDirect. The
-project's contribution is the layout-validity and reuse decision above this
-transport. The TCP store can later be replaced by LMCache, Mooncake, or another
-data plane without changing that decision boundary.
+project's proposed contribution is the layout-scoped namespace and reuse
+decision above this transport. The TCP store can later be replaced by LMCache,
+Mooncake, or another data plane without changing that decision boundary.
 
 ## Quick start: CPU control plane
 
@@ -147,7 +152,7 @@ KV tensors; it is not a NumPy or sleep-based performance simulation.
 - Internet access on the first run to download Python packages and the model.
 
 The benchmark has been validated on an 8-GiB RTX 4060 Laptop GPU. Its measured
-peak PyTorch-allocated GPU memory was 1,306 MiB, so the default 0.5B model and
+peak PyTorch-allocated GPU memory was 1,246 MiB, so the default 0.5B model and
 512-token input are expected to fit on a typical 6-GiB RTX 4050. The 4050 has
 not yet been measured by this project, and its absolute latency should not be
 compared directly with the reported 4060 latency. If an out-of-memory error
@@ -201,12 +206,17 @@ The supported launch command is:
 The script validates CUDA, runs `reset`, `whole_graph`, and `local_layout`, and
 prints their combined summary. It intentionally starts an empty state server
 for each policy, preventing state left by a previous run from turning initial
-misses into remote hits. It also writes each policy to a different file:
+misses into remote hits. It writes each policy to a raw-data file and records
+its environment, parameters, source hash, trace hash, GPU peak, and aggregate
+metrics in a sidecar file:
 
 ```text
 results/gpu-reset.jsonl
+results/gpu-reset.summary.json
 results/gpu-whole_graph.jsonl
+results/gpu-whole_graph.summary.json
 results/gpu-local_layout.jsonl
+results/gpu-local_layout.summary.json
 ```
 
 The defaults reproduce the reported workload: 512 tokens, three repetitions,
@@ -306,8 +316,9 @@ The preliminary result files were produced with the following environment:
 | State service | `127.0.0.1:7648`, localhost TCP, 1-GiB CPU-store limit |
 
 The two logical serving instances shared one physical GPU and one loaded model
-in this experiment. The table describes the machine used for the published
-numbers, not a claim that every listed component is required.
+in this experiment. The tracked summary files provide machine-readable
+provenance for the published numbers. The table describes that machine, not a
+claim that every listed component is required.
 
 ### What one GPU can and cannot establish
 
@@ -322,8 +333,9 @@ RDMA are optional extensions, not prerequisites for the layout-identity result.
 
 - `reset`: request-scoped keys; every request computes new state.
 - `whole_graph`: state is isolated by complete graph and agent role.
-- `local_layout`: state is shared whenever the agent-local structure matches,
-  even if unrelated portions of the complete graph changed.
+- `local_layout`: state is looked up whenever the agent-local structure
+  matches, even if unrelated portions of the complete graph changed. The
+  current exact-cache benchmark additionally requires identical prompt tokens.
 
 The required comparison uses the same graph trace for all policies. This keeps
 task topology and token structure fixed while isolating the state-management

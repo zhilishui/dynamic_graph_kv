@@ -12,22 +12,24 @@ claim about production-scale multi-GPU performance.
 
 KVCOMM reduces repeated LLM computation by reusing KV state across agents.
 However, a multi-agent system may select a different communication graph for
-each request. Keying reusable state by request or by the complete graph is
-safe, but it discards useful state when an unrelated part of the graph changes.
-Keying state only by agent identifier can reuse more state, but it can be
-unsafe: the same agent may receive a different ordered set of predecessors,
+each request. Resetting state for every request is safe but discards reuse;
+isolating structural state by complete graph also fragments it when an
+unrelated part of the graph changes. Keying only by agent identifier is too
+coarse: the same agent may receive a different ordered set of predecessors,
 prompt template, or placeholder layout in the new graph.
 
 The project therefore asks:
 
-> Can an agent-local prompt-layout identity preserve safe KV-state reuse across
-> dynamic graph changes and reduce unnecessary dense prefills?
+> Can an agent-local prompt-layout identity expose reusable state across
+> dynamic graph changes, and can KVCOMM use that namespace without changing
+> task outputs?
 
 GraphKV constructs an identity from the state-relevant local structure,
 including the model and template version, the consumer role, its ordered
-predecessors, and the placeholder schema. A cached state is reused only when
-this identity matches. The policy is compared with request-level reset and
-complete-graph isolation.
+predecessors, and the placeholder schema. In the current exact-cache benchmark,
+prompt token IDs must also match; layout identity alone does not make a full KV
+cache reusable across changed message values. The policy is compared with
+request-level reset and complete-graph isolation.
 
 ## Implemented Prototype
 
@@ -69,21 +71,21 @@ GPU DynamicCache
 This implementation makes three system costs observable: local lookup, remote
 transfer and restoration, and recomputation. That distinction matters because
 a policy that increases the number of reusable states does not necessarily
-reduce latency. In the corrected preliminary run, agent-local layout identity
+reduce latency. In the current preliminary run, agent-local layout identity
 reduced dense prefills from seven to five relative to complete-graph isolation,
-but its observed total and p95 state-readiness times were not lower. The small
-number of synchronous serialization and publication observations varied enough
-to outweigh the saved prefills in that run. The result motivates, but does not
-yet validate, a cost-aware choice between remote reuse and recomputation.
+but its summed state-readiness time was 8.2% higher and its p95 was also worse.
+Measured latency varied substantially across preliminary runs. The result
+motivates, but does not yet validate, a cost-aware choice between remote reuse
+and recomputation.
 
 The current experiment uses localhost TCP. Its two logical serving instances
 share one model process and one physical RTX 4060; only the state server is an
 independent process. The experiment therefore validates a real cross-process
 protocol and real tensor movement, but it cannot establish cross-machine
 bandwidth, independent-worker contention, RDMA performance, or cluster-scale
-throughput. The research contribution remains the identity and validity rule
-for dynamic graphs. TCP is a replaceable data plane that can later be mapped to
-LMCache, Mooncake, or another state-transfer system.
+throughput. The proposed contribution remains the layout-scoped namespace and
+reuse decision for dynamic graphs. TCP is a replaceable data plane that can
+later be mapped to LMCache, Mooncake, or another state-transfer system.
 
 ## Preliminary Experimental Setup
 
@@ -92,17 +94,21 @@ The experiment used the following configuration:
 - GPU: NVIDIA GeForce RTX 4060 Laptop GPU with 8 GiB of memory;
 - model: Qwen2.5-0.5B-Instruct in FP16 with eager attention;
 - context length: 512 input tokens, batch size one;
-- workload: five request-specific DAGs repeated three times;
+- workload: five controlled synthetic request-specific DAGs repeated three times;
 - total agent invocations: 33 per policy;
 - placement: two logical serving instances assigned round-robin by request;
 - data path: an independent state server over localhost TCP; and
 - serialized KV-state size: 6,309,443 bytes per state.
 
-The maximum allocated GPU memory was approximately 1,306 MiB. The primary
+The maximum allocated GPU memory was approximately 1,246 MiB. The primary
 latency metric measures the current synchronous implementation: a cache miss
 includes real transformer prefill, serialization, and publication; a remote
 hit includes TCP retrieval, deserialization, and CPU-to-GPU restoration; and a
 local hit selects GPU-resident state.
+
+The repository tracks the three raw JSONL files and their sidecar summaries.
+Each summary records the benchmark source hash, Git revision, trace hash, model
+revision, parameters, software environment, GPU peak, and aggregate metrics.
 
 ## Results
 
@@ -153,9 +159,9 @@ hits from 19 to 23.
 
 | Policy | Average per invocation | Nearest-rank p95 | Sum across 33 invocations |
 |---|---:|---:|---:|
-| Reset per request | 63.982 ms | 145.747 ms | 2,111.406 ms |
-| Complete-graph isolation | 34.003 ms | 239.574 ms | 1,122.083 ms |
-| Agent-local layout identity | 36.192 ms | 277.285 ms | 1,194.345 ms |
+| Reset per request | 106.745 ms | 148.162 ms | 3,522.580 ms |
+| Complete-graph isolation | 64.415 ms | 276.158 ms | 2,125.692 ms |
+| Agent-local layout identity | 69.716 ms | 545.085 ms | 2,300.644 ms |
 
 These columns measure **state-readiness time**, not full request latency:
 
@@ -175,10 +181,12 @@ of the GPU-resident state. It does not include subsequent token generation,
 the rest of the multi-agent workflow, or final answer generation. It is
 therefore neither full TTFT nor end-to-end request latency.
 
-All 99 state acquisitions passed the embedded layout-identity and prompt-token
+All 99 state acquisitions passed the layout-identity and exact prompt-token
 checks. Under the layout-aware policy, the median observed miss path was
-197.885 ms, while the median localhost remote-hit path was 27.398 ms. The
-median GPU-local path was 0.062 ms.
+535.774 ms, while the median localhost remote-hit path was 43.716 ms. The
+median GPU-local path was 0.029 ms. These checks establish exact-cache
+compatibility for this fixed-token trace, not KVCOMM correctness under changing
+message values.
 
 The benchmark also records `modeled_state_ready_ms` as a secondary metric. For
 a miss, this value counts only dense prefill and models a future design in
@@ -189,45 +197,42 @@ For this trace, agent-local layout identity:
 
 - eliminated two of the seven dense prefills required by complete-graph
   isolation;
-- increased GPU-local hits from 19 to 23; but
-- produced 6.4% higher summed observed state-readiness time than complete-graph
-  isolation in this run.
+- increased GPU-local hits from 19 to 23; and
+- produced 8.2% higher summed observed state-readiness time than complete-graph
+  isolation, although 34.7% lower than reset, in this run.
 
-The latency result requires caution. Layout-aware reuse produced a higher p95
-than complete-graph isolation: 277.285 ms versus 239.574 ms. Its relatively few
-miss, serialization, and synchronous-publication observations also took longer
-in this run. With only 33 invocations per policy and a fixed policy execution
-order, these differences cannot separate policy effects from runtime
-variation. The current data support a reduction in repeated prefill work, but
-they do not yet demonstrate an observed mean, aggregate, or tail-latency
-improvement over complete-graph isolation.
+The latency result requires caution. Layout-aware reuse had higher mean, total,
+and p95 time than complete-graph isolation in this run; its p95 was 545.085 ms
+versus 276.158 ms. With only 33 invocations per policy, a fixed execution order,
+and substantial variation across preliminary runs, these measurements cannot
+separate policy effects from runtime variation. The data support a reduction
+in repeated prefill work; they do not yet establish a general latency
+improvement.
 
 ## Conclusions Supported by the Current Evidence
 
 ### 1. The mechanism is feasible on one RTX 4060
 
-A single 8-GiB RTX 4060 is sufficient to build and exercise the core mechanism
-with real transformer KV tensors. It can validate layout identities, local and
+A single 8-GiB RTX 4060 is sufficient to build and exercise the mechanism with
+real transformer KV tensors. It can validate layout identities, local and
 remote state paths, serialization, compatibility checks, and recomputation.
-Neither RDMA nor a multi-node cluster is necessary to answer the core research
-question.
+It cannot by itself establish multi-GPU or production-network performance.
 
 ### 2. Complete-graph identity can discard valid reuse
 
 The experiment includes graph transitions in which the complete graph changes
 but some agents retain the same local prompt layout. Complete-graph isolation
-treats these states as different, whereas agent-local layout identity safely
-recognizes the unchanged layouts. The reduction from seven to five dense
-prefills directly demonstrates this otherwise hidden reuse opportunity in the
-tested trace.
+treats these states as different, whereas agent-local layout identity recognizes
+the unchanged structure. Because this controlled trace also keeps prompt tokens
+identical for equal layouts, the reduction from seven to five dense prefills
+demonstrates a reuse opportunity, not yet general cross-context KVCOMM reuse.
 
 ### 3. Agent identifier alone is not a sufficient correctness condition
 
-An agent's reusable state depends on its local input structure, not only its
-name. The implemented identity makes the validity condition explicit and
-checks both the structural digest and prompt tokens before accepting restored
-state. This separates safe reuse from accidental reuse across incompatible
-graph layouts.
+An agent's state namespace depends on its local input structure, not only its
+name. The prototype checks both the structural digest and exact prompt tokens
+before inference. The future KVCOMM integration must additionally validate
+that its approximation remains accurate when message values differ.
 
 ### 4. Remote reuse is not automatically beneficial
 
@@ -238,15 +243,14 @@ and model speed determine whether transfer is preferable to recomputation. A
 complete system should therefore support a cost-aware reuse decision rather
 than transferring every matching state unconditionally.
 
-### 5. One GPU is enough for the course project, but it limits the claim
+### 5. One GPU is enough for mechanism evaluation, but it limits the claim
 
-One GPU can support a complete course project if the contribution is framed as
-a new state-validity and reuse mechanism for dynamic graphs. Multiple logical
-instances and an independent state process are sufficient to test the
-distributed control path. The experiment cannot establish production
-multi-GPU throughput, RDMA performance, or data-center scalability because the
-logical model instances currently share one physical GPU and one model
-process.
+One GPU can exercise the proposed layout namespace and distributed control
+path using multiple logical instances and an independent state process. A
+second GPU would materially strengthen the remote-worker evaluation. The
+current experiment cannot establish production multi-GPU throughput, RDMA
+performance, or data-center scalability because both logical model instances
+share one physical GPU and one model process.
 
 ## What Has Not Yet Been Established
 
@@ -265,13 +269,13 @@ particular:
 
 Consequently, the defensible current claim is:
 
-> The prototype demonstrates that agent-local prompt layouts can remain safely
-> reusable when the complete multi-agent graph changes. On one RTX 4060 and a
-> small controlled trace, layout-granular state management reduced redundant
-> dense prefills relative to complete-graph isolation, but it did not improve
-> observed latency in the corrected single run. Repeated counterbalanced
-> trials, full KVCOMM integration, and broader task-level evaluation are still
-> required to determine the general end-to-end benefit.
+> On a controlled fixed-token trace, the prototype demonstrates that
+> agent-local structural identity exposes reuse opportunities hidden by
+> complete-graph isolation. It also validates real KV serialization and
+> cross-process TCP restoration on one RTX 4060. It does not yet establish safe
+> cross-context KVCOMM reuse or a general latency improvement; those claims
+> require full KVCOMM integration, generated workloads, and repeated
+> counterbalanced trials.
 
 ## Work Required for the Final Conclusion
 
@@ -286,6 +290,5 @@ short prefixes, and cases in which transfer costs more than recomputation.
 
 If these experiments confirm the preliminary behavior without changing model
 outputs, the final conclusion can be that agent-local layout identity is a
-safer and less wasteful state-management boundary than either request-level
-reset, complete-graph isolation, or agent-ID-only reuse for dynamic
-multi-agent inference.
+useful state-management namespace for KVCOMM under dynamic multi-agent graphs,
+with explicit regimes in which local reuse, transfer, or recomputation wins.

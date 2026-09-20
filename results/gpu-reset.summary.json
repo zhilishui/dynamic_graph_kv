@@ -1,0 +1,88 @@
+{
+  "environment": {
+    "python": "3.12.3",
+    "torch": "2.6.0+cu126",
+    "torch_cuda_runtime": "12.6",
+    "transformers": "4.50.2",
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "requested_model_revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "resolved_model_revision": "7ae557604adf67be50417f59c2c2f167def9a775"
+  },
+  "samples": 33,
+  "decisions": {
+    "recompute": 33
+  },
+  "median_acquire_ms": 105.81649,
+  "median_restore_ms": 0.0,
+  "median_observed_state_ready_ms_by_decision": {
+    "recompute": 105.840479
+  },
+  "median_modeled_state_ready_ms_by_decision": {
+    "recompute": 105.682439
+  },
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "peak_allocated_mib": 1245.6318359375
+  },
+  "manager_stats": {
+    "instance-0": {
+      "local_hits": 0,
+      "remote_hits": 0,
+      "recomputes": 15,
+      "remote_rejected": 0,
+      "bytes_loaded": 0,
+      "bytes_stored": 0,
+      "load_ns": 0,
+      "compute_ns": 1596188891
+    },
+    "instance-1": {
+      "local_hits": 0,
+      "remote_hits": 0,
+      "recomputes": 18,
+      "remote_rejected": 0,
+      "bytes_loaded": 0,
+      "bytes_stored": 0,
+      "load_ns": 0,
+      "compute_ns": 1923563083
+    }
+  },
+  "provenance": {
+    "created_at_utc": "2026-09-20T20:29:23.015504+00:00",
+    "git_commit": "a3632e87f9bda5ea93f7844b34b7c1fec635588c",
+    "benchmark_sha256": "03f3e039f81cbf2a2fb11a3cd73f51cabe722dd74d7a2deba26d0f4e1589f5b4",
+    "trace": "configs/example_trace.jsonl",
+    "trace_sha256": "72a1755f62367bb1558ec9b6607c84b75932d731dd3ba3ff68b89439d277ac5f",
+    "output": "results/gpu-reset.jsonl"
+  },
+  "parameters": {
+    "device": "cuda",
+    "prompt_tokens": 512,
+    "repetitions": 3,
+    "placement": "round_robin",
+    "policy": "reset",
+    "warmup": 2,
+    "attn_implementation": "eager",
+    "server": "127.0.0.1:7648"
+  },
+  "result_summary": {
+    "path": "results/gpu-reset.jsonl",
+    "samples": 33,
+    "decisions": {
+      "recompute": 33
+    },
+    "all_verified": true,
+    "payload_bytes": 0,
+    "observed_state_ready_ms": {
+      "mean": 106.74486254545455,
+      "median": 105.840479,
+      "p95_nearest_rank": 148.16232,
+      "sum": 3522.580464
+    },
+    "modeled_state_ready_ms": {
+      "mean": 106.49482706060606,
+      "median": 105.682439,
+      "p95_nearest_rank": 147.840885,
+      "sum": 3514.329293
+    }
+  }
+}
