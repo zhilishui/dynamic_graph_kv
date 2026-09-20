@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run real small-model prefills and GraphKV transfers on an RTX 4060.
+"""Run real small-model prefills and GraphKV transfers on a CUDA GPU.
 
 This is an integration benchmark, not a simulator. It alternates roles between
 two logical serving instances. When ``--server`` is supplied, both managers
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import statistics
 import sys
 import time
@@ -35,6 +36,10 @@ TRACE = (
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    result.add_argument(
+        "--model-revision",
+        help="optional Hugging Face commit or tag used for reproducible downloads",
+    )
     result.add_argument("--device", default="cuda")
     result.add_argument("--prompt-tokens", type=int, default=512)
     result.add_argument("--repetitions", type=int, default=3)
@@ -74,13 +79,16 @@ def main() -> None:
         raise SystemExit("Install GPU dependencies: pip install -e '.[gpu]'") from exc
 
     if args.device.startswith("cuda") and not torch.cuda.is_available():
-        raise SystemExit("CUDA is not visible; run this script on the 4060 host")
+        raise SystemExit(
+            "CUDA is not visible; verify the NVIDIA driver and CUDA-enabled PyTorch"
+        )
     if args.prompt_tokens <= 0:
         raise SystemExit("--prompt-tokens must be positive")
 
     dtype = torch.float16 if args.device.startswith("cuda") else torch.float32
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    config = AutoConfig.from_pretrained(args.model)
+    revision_args = {"revision": args.model_revision} if args.model_revision else {}
+    tokenizer = AutoTokenizer.from_pretrained(args.model, **revision_args)
+    config = AutoConfig.from_pretrained(args.model, **revision_args)
     # Qwen2.5 publishes a sliding_window value even when use_sliding_window is
     # false. Transformers 4.50 warns on the value alone; clearing the disabled
     # field avoids a misleading warning without changing model semantics.
@@ -91,6 +99,7 @@ def main() -> None:
         config=config,
         torch_dtype=dtype,
         attn_implementation=args.attn_implementation,
+        **revision_args,
     )
     model.to(args.device).eval()
     codec = DynamicCacheCodec()
@@ -227,6 +236,15 @@ def main() -> None:
                         print(json.dumps(sample))
 
     summary = {
+        "environment": {
+            "python": platform.python_version(),
+            "torch": torch.__version__,
+            "torch_cuda_runtime": torch.version.cuda,
+            "transformers": __import__("transformers").__version__,
+            "model": args.model,
+            "requested_model_revision": args.model_revision,
+            "resolved_model_revision": getattr(config, "_commit_hash", None),
+        },
         "samples": len(samples),
         "decisions": {
             decision: sum(sample["decision"] == decision for sample in samples)

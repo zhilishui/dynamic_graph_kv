@@ -57,6 +57,8 @@ exact layout identity. Unknown or incompatible layouts recompute.
 The package itself has no mandatory dependencies:
 
 ```bash
+git clone https://github.com/zhilishui/dynamic_graph_kv.git
+cd dynamic_graph_kv
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -e .
@@ -85,35 +87,129 @@ graphkv-demo --policy local_layout
 The demo uses sleeps and opaque bytes only to validate policy behavior. It is
 not reported as a performance result.
 
-## RTX 4060 benchmark
+## CUDA GPU benchmark
 
 The default benchmark uses Qwen2.5-0.5B in FP16, a 512-token prompt, batch size
-one, and one shared model. This is intentionally small enough for an 8-GB RTX
-4060 while still executing real transformer prefill and moving real KV tensors.
+one, and one shared model. It executes real transformer prefill and moves real
+KV tensors; it is not a NumPy or sleep-based performance simulation.
 
-Install a CUDA-enabled PyTorch build appropriate for the host first, then:
+### Hardware and software requirements
+
+- Linux or WSL2 with Python 3.10 or newer;
+- a CUDA-capable NVIDIA GPU and a working NVIDIA driver;
+- approximately 8 GiB of free disk space for the environment and model;
+- approximately 8 GiB of system memory recommended; and
+- Internet access on the first run to download Python packages and the model.
+
+The benchmark has been validated on an 8-GiB RTX 4060 Laptop GPU. Its measured
+peak PyTorch-allocated GPU memory was 1,306 MiB, so the default 0.5B model and
+512-token input are expected to fit on a typical 6-GiB RTX 4050. The 4050 has
+not yet been measured by this project, and its absolute latency should not be
+compared directly with the reported 4060 latency. If an out-of-memory error
+occurs, retry with `GRAPHKV_PROMPT_TOKENS=256`.
+
+The server's `--max-gib` option limits **CPU memory** used for stored payloads;
+it is not a GPU-memory reservation.
+
+### Fresh installation
+
+Clone the repository and create an isolated environment:
 
 ```bash
-python -m pip install -e '.[gpu]'
+git clone https://github.com/zhilishui/dynamic_graph_kv.git
+cd dynamic_graph_kv
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+```
 
+Install a CUDA-enabled PyTorch build compatible with the machine's NVIDIA
+driver, then install GraphKV's GPU dependencies. For the exact software stack
+used for the reported results:
+
+```bash
+python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu126
+python -m pip install transformers==4.50.2
+python -m pip install -e .
+```
+
+Users with a different driver should select the appropriate CUDA wheel from
+the official PyTorch installer rather than assuming that CUDA 12.6 is
+compatible. Confirm that the environment can see the GPU and run the tests:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+python -m unittest discover -s tests -v
+```
+
+The CUDA check must print `True`. On the first benchmark run, Transformers will
+download Qwen2.5-0.5B-Instruct from Hugging Face.
+
+### Reproduce all three policies
+
+The supported launch command is:
+
+```bash
+./scripts/run_gpu_suite.sh
+```
+
+The script validates CUDA, runs `reset`, `whole_graph`, and `local_layout`, and
+prints their combined summary. It intentionally starts an empty state server
+for each policy, preventing state left by a previous run from turning initial
+misses into remote hits. It also writes each policy to a different file:
+
+```text
+results/gpu-reset.jsonl
+results/gpu-whole_graph.jsonl
+results/gpu-local_layout.jsonl
+```
+
+The defaults reproduce the reported workload: 512 tokens, three repetitions,
+round-robin placement, Qwen2.5-0.5B-Instruct, and model revision
+`7ae557604adf67be50417f59c2c2f167def9a775`. Optional environment variables
+change the hardware-sized parameters without editing the script:
+
+```bash
+GRAPHKV_PROMPT_TOKENS=256 GRAPHKV_REPETITIONS=1 ./scripts/run_gpu_suite.sh
+```
+
+To summarize previously generated result files without rerunning the model:
+
+```bash
+python scripts/summarize_results.py \
+  results/gpu-reset.jsonl \
+  results/gpu-whole_graph.jsonl \
+  results/gpu-local_layout.jsonl
+```
+
+### Manual two-terminal launch
+
+For debugging one policy, start a clean server in the first terminal:
+
+```bash
 # Terminal 1: independent state process
-graphkv-server --port 7648 --max-gib 4
+graphkv-server --host 127.0.0.1 --port 7648 --max-gib 1
+```
 
-# Terminal 2: real model prefill + TCP state movement
+Then run the benchmark in a second terminal:
+
+```bash
 python scripts/run_gpu_benchmark.py \
   --server 127.0.0.1:7648 \
   --model Qwen/Qwen2.5-0.5B-Instruct \
+  --model-revision 7ae557604adf67be50417f59c2c2f167def9a775 \
   --prompt-tokens 512 \
   --repetitions 3 \
   --placement round_robin \
-  --policy local_layout
+  --policy local_layout \
+  --output results/gpu-local_layout.jsonl
 ```
 
-Run `reset` and `whole_graph` with identical arguments for baselines. Results
-are written as JSON Lines under `results/` and include the decision, layout,
-payload size, dense-prefill time, acquisition time, and CPU-to-GPU restore
-time. `round_robin` changes a role's logical serving instance across requests,
-so a recurring layout exercises a real TCP remote hit; `stable` measures local
+Stop and restart the server before measuring another policy or repeating the
+same policy. Results are JSON Lines and include the decision, layout, payload
+size, dense-prefill time, acquisition time, and CPU-to-GPU restore time.
+`round_robin` changes a role's logical serving instance across requests, so a
+recurring layout exercises a real TCP remote hit; `stable` measures local
 recurrence. The benchmark fails early if CUDA is not visible instead of
 silently falling back to CPU.
 
@@ -124,7 +220,34 @@ plus CPU-to-GPU restoration. Synchronous publication overhead is reported
 separately rather than incorrectly charging serialization to current-state
 readiness.
 
-### What one 4060 can and cannot establish
+### Validated test environment
+
+The preliminary result files were produced with the following environment:
+
+| Component | Validated value |
+|---|---|
+| Operating system | Ubuntu 24.04.4 LTS under WSL2, Linux 6.18.33.2 |
+| CPU | Intel Core i9-13900H, 20 logical CPUs visible to WSL2 |
+| System memory | 7.6 GiB RAM and 2.0 GiB swap visible to WSL2 |
+| GPU | NVIDIA GeForce RTX 4060 Laptop GPU, 8,188 MiB |
+| NVIDIA driver | 566.26 |
+| Python | 3.12.3 |
+| PyTorch | 2.6.0+cu126 |
+| PyTorch CUDA runtime | 12.6 |
+| cuDNN | 9.5.1 |
+| Transformers | 4.50.2 |
+| Model | Qwen/Qwen2.5-0.5B-Instruct, FP16 |
+| Model revision | `7ae557604adf67be50417f59c2c2f167def9a775` |
+| Attention implementation | eager |
+| Code used for reported measurements | commit `b4285f3` |
+| Benchmark parameters | 512 tokens, batch 1, 2 warm-ups, 3 repetitions |
+| State service | `127.0.0.1:7648`, localhost TCP, 4-GiB CPU-store limit |
+
+The two logical serving instances shared one physical GPU and one loaded model
+in this experiment. The table describes the machine used for the published
+numbers, not a claim that every listed component is required.
+
+### What one GPU can and cannot establish
 
 A single 4060 can validate real KV generation, layout reuse, serialization,
 TCP transfer between processes, and the local/remote/recompute control path.
