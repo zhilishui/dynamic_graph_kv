@@ -1,4 +1,4 @@
-"""Standalone TCP server for cross-process GraphKV state sharing."""
+"""Runtime TCP server for cross-process GraphKV state sharing."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import argparse
 import socketserver
 from typing import Any
 
-from .protocol import ProtocolError, recv_frame, send_frame
-from .store import MemoryStateStore
+from graphkv.runtime.protocol import ProtocolError, recv_frame, send_frame
+from graphkv.runtime.store import MemoryStateStore
 
 
 class StateRequestHandler(socketserver.BaseRequestHandler):

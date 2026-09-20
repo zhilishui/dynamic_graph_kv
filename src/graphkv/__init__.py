@@ -1,11 +1,31 @@
-"""GraphKV: layout-aware state management for dynamic agent graphs."""
+"""GraphKV: topology, runtime, and metrics for dynamic agent graphs."""
 
-from .identity import LayoutIdentity, LayoutSpec, graph_identity
-from .manager import Decision, LayoutStateManager, Policy
-from .store import MemoryStateStore, StateRecord, TcpStateStoreClient
+from graphkv.metrics import JsonlMetricWriter, summarize_result_file
+from graphkv.runtime import (
+    Decision,
+    DynamicKVRuntime,
+    InvocationPlan,
+    LayoutIdentity,
+    LayoutSpec,
+    LayoutStateManager,
+    MemoryStateStore,
+    Policy,
+    StateRecord,
+    TcpStateStoreClient,
+)
+from graphkv.topology import (
+    GraphSpec,
+    TopologyRequest,
+    graph_identity,
+    load_topology_trace,
+)
 
 __all__ = [
     "Decision",
+    "DynamicKVRuntime",
+    "GraphSpec",
+    "InvocationPlan",
+    "JsonlMetricWriter",
     "LayoutIdentity",
     "LayoutSpec",
     "LayoutStateManager",
@@ -13,5 +33,8 @@ __all__ = [
     "Policy",
     "StateRecord",
     "TcpStateStoreClient",
+    "TopologyRequest",
     "graph_identity",
+    "load_topology_trace",
+    "summarize_result_file",
 ]

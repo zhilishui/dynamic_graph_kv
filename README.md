@@ -33,24 +33,33 @@ can reuse.
 ## Architecture
 
 ```text
-request-specific graph
-          |
-          v
-Topology adapter ---> active roles + ordered predecessors + placement
-          |
-          v
-Layout identity ----> SHA-256(model, template, role, predecessors, schema)
-          |
-          v
-State manager ------> local hit | remote hit | recompute
-          |                              |
-          |                    TCP / LMCache / Mooncake
-          v                              v
-DynamicCache codec <-------------- versioned state bytes
+topology generator / saved JSONL trace
+                  |
+                  v
+        Dynamic KV runtime
+        - graph adapter
+        - layout identity
+        - local / remote / recompute
+        - memory or TCP backend
+                  |
+                  v
+          JSONL metric system
 ```
 
 The safety rule is simple: an invocation may only load state stored under its
 exact layout identity. Unknown or incompatible layouts recompute.
+
+The code follows the same three-component boundary:
+
+- `graphkv.topology` loads the JSONL contract produced by a topology generator;
+- `graphkv.runtime` turns each graph into ordered agent invocations and
+  layout-scoped state decisions; and
+- `graphkv.metrics` writes and summarizes execution records outside the
+  runtime decision path.
+
+`graphkv.runtime.manager`, the in-memory/TCP stores, and the `DynamicCache`
+codec are internal runtime mechanisms. LMCache or Mooncake may replace the
+state backend, but they are not required to exercise the architecture.
 
 ### Why use a TCP state server?
 
@@ -209,6 +218,15 @@ change the hardware-sized parameters without editing the script:
 GRAPHKV_PROMPT_TOKENS=256 GRAPHKV_REPETITIONS=1 ./scripts/run_gpu_suite.sh
 ```
 
+To replay a topology-generator output instead of the example trace:
+
+```bash
+GRAPHKV_TRACE=path/to/generated-trace.jsonl ./scripts/run_gpu_suite.sh
+```
+
+Each JSONL row must contain `request_id`, `active_roles`, and `edges`; see
+`configs/example_trace.jsonl` for the generator/runtime contract.
+
 To summarize previously generated result files without rerunning the model:
 
 ```bash
@@ -232,6 +250,7 @@ Then run the benchmark in a second terminal:
 ```bash
 python scripts/run_gpu_benchmark.py \
   --server 127.0.0.1:7648 \
+  --trace configs/example_trace.jsonl \
   --model Qwen/Qwen2.5-0.5B-Instruct \
   --model-revision 7ae557604adf67be50417f59c2c2f167def9a775 \
   --prompt-tokens 512 \

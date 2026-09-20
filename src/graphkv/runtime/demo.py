@@ -5,18 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from pathlib import Path
 
-from .manager import LayoutStateManager, Policy
-from .store import MemoryStateStore, TcpStateStoreClient
-from .topology import GraphSpec
-
-TRACE = (
-    GraphSpec.create(("A", "C"), (("A", "C"),)),
-    GraphSpec.create(("B", "C"), (("B", "C"),)),
-    GraphSpec.create(("A", "C"), (("A", "C"),)),
-    GraphSpec.create(("A", "B", "C"), (("A", "C"), ("B", "C"))),
-    GraphSpec.create(("B", "C"), (("B", "C"),)),
-)
+from graphkv.runtime.manager import Policy
+from graphkv.runtime.orchestrator import DynamicKVRuntime
+from graphkv.runtime.store import MemoryStateStore, TcpStateStoreClient
+from graphkv.topology.trace import load_topology_trace
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -27,6 +21,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server", help="optional HOST:PORT for cross-process state")
     parser.add_argument("--compute-ms", type=float, default=5.0)
     parser.add_argument("--state-kib", type=int, default=64)
+    parser.add_argument(
+        "--trace",
+        type=Path,
+        default=Path("configs/example_trace.jsonl"),
+        help="JSONL emitted by the topology-generator boundary",
+    )
+    parser.add_argument(
+        "--placement", choices=("stable", "round_robin"), default="round_robin"
+    )
     return parser
 
 
@@ -37,11 +40,17 @@ def main() -> None:
         store = TcpStateStoreClient(host, int(port))
     else:
         store = MemoryStateStore(max_bytes=64 << 20)
-    manager = LayoutStateManager(store, policy=Policy(args.policy))
+    runtime = DynamicKVRuntime(
+        store,
+        model="demo-model",
+        policy=Policy(args.policy),
+        placement=args.placement,
+    )
+    trace = load_topology_trace(args.trace)
 
-    for request_index, graph in enumerate(TRACE):
-        layouts = graph.layouts(model="demo-model")
-        for role in graph.topological_order():
+    for request_index, request in enumerate(trace):
+        for invocation in runtime.plan(request, request_position=request_index):
+            role = invocation.role
 
             def compute(role: str = role) -> bytes:
                 time.sleep(args.compute_ms / 1000)
@@ -49,26 +58,24 @@ def main() -> None:
                 repeats = max(1, (args.state_kib << 10) // len(marker))
                 return (marker * repeats)[: args.state_kib << 10]
 
-            result = manager.acquire(
-                layouts[role],
-                request_id=str(request_index),
-                graph_digest=graph.digest,
+            result = runtime.acquire(
+                invocation,
                 compute=compute,
-                metadata={"role": role, "layout": layouts[role].digest},
             )
             print(
                 json.dumps(
                     {
-                        "request": request_index,
+                        "request_id": request.request_id,
                         "role": role,
-                        "layout": layouts[role].short,
+                        "instance": invocation.instance,
+                        "layout": invocation.layout.short,
                         "decision": result.decision.value,
                         "elapsed_ms": result.elapsed_ns / 1e6,
                         "bytes": len(result.payload),
                     }
                 )
             )
-    print(json.dumps({"summary": manager.stats.as_dict()}))
+    print(json.dumps({"summary": runtime.stats()}))
 
 
 if __name__ == "__main__":

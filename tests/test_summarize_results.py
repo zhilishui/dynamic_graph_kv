@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.summarize_results import percentile
+from graphkv.metrics import percentile
 
 
 class PercentileTests(unittest.TestCase):

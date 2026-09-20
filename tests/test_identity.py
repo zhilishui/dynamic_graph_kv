@@ -1,6 +1,6 @@
 import unittest
 
-from graphkv.identity import LayoutIdentity, LayoutSpec
+from graphkv.runtime import LayoutIdentity, LayoutSpec, layouts_for_graph
 from graphkv.topology import GraphSpec
 
 
@@ -10,16 +10,16 @@ class IdentityTests(unittest.TestCase):
         second = GraphSpec.create(("A", "C", "D"), (("A", "C"),))
         self.assertNotEqual(first.digest, second.digest)
         self.assertEqual(
-            first.layouts(model="m")["C"].digest,
-            second.layouts(model="m")["C"].digest,
+            layouts_for_graph(first, model="m")["C"].digest,
+            layouts_for_graph(second, model="m")["C"].digest,
         )
 
     def test_predecessor_change_changes_identity(self) -> None:
         first = GraphSpec.create(("A", "C"), (("A", "C"),))
         second = GraphSpec.create(("B", "C"), (("B", "C"),))
         self.assertNotEqual(
-            first.layouts(model="m")["C"].digest,
-            second.layouts(model="m")["C"].digest,
+            layouts_for_graph(first, model="m")["C"].digest,
+            layouts_for_graph(second, model="m")["C"].digest,
         )
 
     def test_order_is_part_of_explicit_layout_identity(self) -> None:

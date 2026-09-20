@@ -1,11 +1,13 @@
-"""Stable identities for graph-local prompt layouts."""
+"""Runtime identities for graph-local prompt layouts."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass
+
+from graphkv.topology.model import GraphSpec
 
 
 def _digest(value: object) -> str:
@@ -70,13 +72,25 @@ class LayoutIdentity:
         return self.digest[:12]
 
 
-def graph_identity(
-    active_roles: Iterable[str], edges: Iterable[tuple[str, str]]
-) -> str:
-    """Return a stable identity for a complete graph baseline."""
+def layouts_for_graph(
+    graph: GraphSpec,
+    *,
+    model: str,
+    template_versions: Mapping[str, str] | None = None,
+) -> dict[str, LayoutIdentity]:
+    """Derive runtime identities from a topology component output."""
 
-    value = {
-        "active_roles": sorted(active_roles),
-        "edges": sorted([list(edge) for edge in edges]),
-    }
-    return _digest(value)
+    versions = template_versions or {}
+    result: dict[str, LayoutIdentity] = {}
+    for role in graph.topological_order():
+        predecessors = graph.predecessors(role)
+        schema = tuple(f"message:{source}" for source in predecessors) + ("question",)
+        spec = LayoutSpec.create(
+            model=model,
+            template_version=versions.get(role, "v1"),
+            consumer_role=role,
+            predecessor_roles=predecessors,
+            placeholder_schema=schema,
+        )
+        result[role] = LayoutIdentity.from_spec(spec)
+    return result

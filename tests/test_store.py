@@ -1,8 +1,12 @@
 import threading
 import unittest
 
-from graphkv.server import StateTcpServer
-from graphkv.store import MemoryStateStore, TcpStateStoreClient, VersionConflict
+from graphkv.runtime.server import StateTcpServer
+from graphkv.runtime.store import (
+    MemoryStateStore,
+    TcpStateStoreClient,
+    VersionConflict,
+)
 
 
 class MemoryStoreTests(unittest.TestCase):

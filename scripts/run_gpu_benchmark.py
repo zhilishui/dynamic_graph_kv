@@ -19,23 +19,26 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "src"))
 
-from graphkv.codec import DynamicCacheCodec
-from graphkv.manager import LayoutStateManager, Policy
-from graphkv.store import MemoryStateStore, TcpStateStoreClient
-from graphkv.topology import GraphSpec
-
-TRACE = (
-    GraphSpec.create(("A", "C"), (("A", "C"),)),
-    GraphSpec.create(("B", "C"), (("B", "C"),)),
-    GraphSpec.create(("A", "C"), (("A", "C"),)),
-    GraphSpec.create(("A", "B", "C"), (("A", "C"), ("B", "C"))),
-    GraphSpec.create(("B", "C"), (("B", "C"),)),
+from graphkv.metrics import JsonlMetricWriter
+from graphkv.runtime import (
+    DynamicKVRuntime,
+    MemoryStateStore,
+    Policy,
+    TcpStateStoreClient,
 )
+from graphkv.runtime.codec import DynamicCacheCodec
+from graphkv.topology import load_topology_trace
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    result.add_argument(
+        "--trace",
+        type=Path,
+        default=REPO / "configs" / "example_trace.jsonl",
+        help="JSONL emitted by the topology-generator boundary",
+    )
     result.add_argument(
         "--model-revision",
         help="optional Hugging Face commit or tag used for reproducible downloads",
@@ -120,28 +123,29 @@ def main() -> None:
     else:
         store = MemoryStateStore(max_bytes=4 << 30)
 
-    managers = {
-        "instance-0": LayoutStateManager(store, policy=Policy(args.policy)),
-        "instance-1": LayoutStateManager(store, policy=Policy(args.policy)),
-    }
+    trace = load_topology_trace(args.trace)
+    runtime = DynamicKVRuntime(
+        store,
+        model=args.model,
+        policy=Policy(args.policy),
+        placement=args.placement,
+    )
     gpu_states: dict[str, dict[str, dict[str, object]]] = {
-        "instance-0": {},
-        "instance-1": {},
+        instance: {} for instance in runtime.instances
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
     samples: list[dict[str, object]] = []
 
-    with args.output.open("w", encoding="utf-8") as output:
+    with JsonlMetricWriter(args.output) as output:
         for repetition in range(args.repetitions):
-            for request_index, graph in enumerate(TRACE):
-                layouts = graph.layouts(model=args.model)
-                for role in graph.topological_order():
-                    base_instance = sum(role.encode()) % 2
-                    if args.placement == "round_robin":
-                        base_instance = (base_instance + request_index + repetition) % 2
-                    instance = f"instance-{base_instance}"
-                    manager = managers[instance]
-                    layout = layouts[role]
+            for request_index, request in enumerate(trace):
+                for invocation in runtime.plan(
+                    request,
+                    request_position=request_index,
+                    repetition=repetition,
+                ):
+                    role = invocation.role
+                    instance = invocation.instance
+                    layout = invocation.layout
                     structural_prompt = (
                         f"role={role}; predecessors={','.join(layout.spec.predecessor_roles)}; "
                         f"schema={','.join(layout.spec.placeholder_schema)}. "
@@ -177,12 +181,10 @@ def main() -> None:
                         return codec.encode(computed_state)
 
                     state_ready_started = time.perf_counter_ns()
-                    acquired = manager.acquire(
-                        layout,
-                        request_id=f"{repetition}-{request_index}",
-                        graph_digest=graph.digest,
+                    acquired = runtime.acquire(
+                        invocation,
                         compute=compute,
-                        metadata={"role": role, "instance": instance},
+                        metadata={"repetition": repetition},
                     )
                     restore_ns = 0
                     if acquired.decision.value in ("recompute", "remote_rejected"):
@@ -216,7 +218,9 @@ def main() -> None:
 
                     sample = {
                         "repetition": repetition,
-                        "request": request_index,
+                        "request_position": request_index,
+                        "request_id": request.request_id,
+                        "graph": request.graph.digest,
                         "role": role,
                         "instance": instance,
                         "placement": args.placement,
@@ -238,8 +242,7 @@ def main() -> None:
                         "verified": True,
                     }
                     samples.append(sample)
-                    output.write(json.dumps(sample) + "\n")
-                    output.flush()
+                    output.write(sample)
                     if not args.quiet:
                         print(json.dumps(sample))
 
@@ -288,9 +291,7 @@ def main() -> None:
             if args.device.startswith("cuda")
             else 0.0,
         },
-        "manager_stats": {
-            name: manager.stats.as_dict() for name, manager in managers.items()
-        },
+        "manager_stats": runtime.stats(),
     }
     print(json.dumps({"summary": summary}, indent=2))
 

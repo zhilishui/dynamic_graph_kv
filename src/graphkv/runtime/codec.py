@@ -1,4 +1,4 @@
-"""Optional codec for KVCOMM's Hugging Face DynamicCache state."""
+"""Runtime codec for KVCOMM's Hugging Face DynamicCache state."""
 
 from __future__ import annotations
 

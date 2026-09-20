@@ -12,7 +12,7 @@ class CodecTests(unittest.TestCase):
         import torch
         from transformers.cache_utils import DynamicCache
 
-        from graphkv.codec import DynamicCacheCodec
+        from graphkv.runtime.codec import DynamicCacheCodec
 
         cache = DynamicCache()
         key = torch.arange(24, dtype=torch.float32).reshape(1, 2, 3, 4)

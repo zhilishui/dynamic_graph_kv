@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import hashlib
+import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 
-from .identity import LayoutIdentity, LayoutSpec, graph_identity
+
+def graph_identity(
+    active_roles: Iterable[str], edges: Iterable[tuple[str, str]]
+) -> str:
+    """Return a stable identity for a complete graph baseline."""
+
+    value = {
+        "active_roles": sorted(active_roles),
+        "edges": sorted([list(edge) for edge in edges]),
+    }
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,26 +82,3 @@ class GraphSpec:
         if len(order) != len(roles):
             raise ValueError("agent graph must be acyclic")
         return tuple(order)
-
-    def layouts(
-        self,
-        *,
-        model: str,
-        template_versions: Mapping[str, str] | None = None,
-    ) -> dict[str, LayoutIdentity]:
-        versions = template_versions or {}
-        result: dict[str, LayoutIdentity] = {}
-        for role in self.topological_order():
-            predecessors = self.predecessors(role)
-            schema = tuple(f"message:{source}" for source in predecessors) + (
-                "question",
-            )
-            spec = LayoutSpec.create(
-                model=model,
-                template_version=versions.get(role, "v1"),
-                consumer_role=role,
-                predecessor_roles=predecessors,
-                placeholder_schema=schema,
-            )
-            result[role] = LayoutIdentity.from_spec(spec)
-        return result

@@ -1,4 +1,4 @@
-"""Length-prefixed protocol shared by the TCP state server and client."""
+"""Runtime protocol shared by the TCP state server and client."""
 
 from __future__ import annotations
 

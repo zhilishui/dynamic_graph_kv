@@ -7,6 +7,7 @@ GRAPHKV_HOST="${GRAPHKV_HOST:-127.0.0.1}"
 GRAPHKV_PORT="${GRAPHKV_PORT:-7648}"
 GRAPHKV_MODEL="${GRAPHKV_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}"
 GRAPHKV_MODEL_REVISION="${GRAPHKV_MODEL_REVISION:-7ae557604adf67be50417f59c2c2f167def9a775}"
+GRAPHKV_TRACE="${GRAPHKV_TRACE:-${GRAPHKV_REPO_DIR}/configs/example_trace.jsonl}"
 GRAPHKV_PROMPT_TOKENS="${GRAPHKV_PROMPT_TOKENS:-512}"
 GRAPHKV_REPETITIONS="${GRAPHKV_REPETITIONS:-3}"
 GRAPHKV_RESULTS_DIR="${GRAPHKV_RESULTS_DIR:-${GRAPHKV_REPO_DIR}/results}"
@@ -23,7 +24,7 @@ stop_server() {
 start_clean_server() {
     local policy="$1"
     stop_server
-    "${GRAPHKV_PYTHON_BIN}" -m graphkv.server \
+    "${GRAPHKV_PYTHON_BIN}" -m graphkv.runtime.server \
         --host "${GRAPHKV_HOST}" \
         --port "${GRAPHKV_PORT}" \
         --max-gib 1 \
@@ -33,7 +34,7 @@ start_clean_server() {
     local ready=0
     for _ in {1..50}; do
         if "${GRAPHKV_PYTHON_BIN}" -c \
-            "from graphkv.store import TcpStateStoreClient; assert TcpStateStoreClient('${GRAPHKV_HOST}', ${GRAPHKV_PORT}).ping()" \
+            "from graphkv.runtime import TcpStateStoreClient; assert TcpStateStoreClient('${GRAPHKV_HOST}', ${GRAPHKV_PORT}).ping()" \
             >/dev/null 2>&1; then
             ready=1
             break
@@ -58,6 +59,7 @@ for policy in reset whole_graph local_layout; do
     start_clean_server "${policy}"
     "${GRAPHKV_PYTHON_BIN}" scripts/run_gpu_benchmark.py \
         --server "${GRAPHKV_HOST}:${GRAPHKV_PORT}" \
+        --trace "${GRAPHKV_TRACE}" \
         --model "${GRAPHKV_MODEL}" \
         --model-revision "${GRAPHKV_MODEL_REVISION}" \
         --prompt-tokens "${GRAPHKV_PROMPT_TOKENS}" \

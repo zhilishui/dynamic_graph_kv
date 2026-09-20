@@ -1,4 +1,4 @@
-"""Policy and metrics for layout-aware local/remote state decisions."""
+"""Policies for layout-aware local and remote runtime state decisions."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
-from .identity import LayoutIdentity
-from .store import StateRecord, StateStore
+from graphkv.runtime.identity import LayoutIdentity
+from graphkv.runtime.store import StateRecord, StateStore
 
 
 class Policy(str, Enum):

@@ -1,4 +1,4 @@
-"""Local and cross-process stores for opaque, versioned KV-state blobs."""
+"""Runtime stores for opaque, versioned KV-state blobs."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .protocol import recv_frame, send_frame
+from graphkv.runtime.protocol import recv_frame, send_frame
 
 
 @dataclass(frozen=True, slots=True)
