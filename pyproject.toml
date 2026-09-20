@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graphkv"
+version = "0.1.0"
+description = "Layout-aware KV-state management for dynamic multi-agent graphs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+  {name = "Rutwik Routu"},
+  {name = "Zhili Shui"},
+  {name = "Christian Paul"},
+]
+dependencies = []
+
+[project.optional-dependencies]
+gpu = [
+  "torch>=2.2",
+  "transformers>=4.50,<5",
+]
+test = ["pytest>=8"]
+
+[project.scripts]
+graphkv-server = "graphkv.server:main"
+graphkv-demo = "graphkv.demo:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+

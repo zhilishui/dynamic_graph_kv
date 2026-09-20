@@ -1,0 +1,6 @@
+{"request_id":"0","active_roles":["A","C"],"edges":[["A","C"]]}
+{"request_id":"1","active_roles":["B","C"],"edges":[["B","C"]]}
+{"request_id":"2","active_roles":["A","C"],"edges":[["A","C"]]}
+{"request_id":"3","active_roles":["A","B","C"],"edges":[["A","C"],["B","C"]]}
+{"request_id":"4","active_roles":["B","C"],"edges":[["B","C"]]}
+
