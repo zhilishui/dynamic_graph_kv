@@ -69,16 +69,75 @@ on the current request's state-readiness path.
 
 ## Results
 
-| Policy | Dense prefills | Remote hits | Local hits | Mean state-readiness time | p95 | Summed time |
-|---|---:|---:|---:|---:|---:|---:|
-| Reset per request | 33 | 0 | 0 | 48.085 ms | 67.262 ms | 1,586.812 ms |
-| Complete-graph isolation | 7 | 7 | 19 | 14.686 ms | 44.951 ms | 484.648 ms |
-| Agent-local layout identity | 5 | 5 | 23 | 11.315 ms | 47.707 ms | 373.405 ms |
+### How to read the results
+
+Each policy runs exactly the same workload: 33 agent invocations. An agent
+invocation is one point at which an agent needs a valid KV state before it can
+continue inference. The state manager must handle every invocation in exactly
+one of three ways:
+
+- **Dense prefill:** No reusable state is available, so the model recomputes
+  the KV state from the 512-token prompt. This is the most expensive path.
+- **Remote hit:** A matching state exists in the independent state-server
+  process. The system retrieves it over localhost TCP, deserializes it, and
+  copies it back to the GPU.
+- **Local hit:** A matching state is already resident in the logical serving
+  instance's GPU cache. Only a lookup is needed.
+
+For every row, `dense prefills + remote hits + local hits = 33`. The three
+policies differ only in the rule used to decide whether an existing state is
+valid:
+
+- **Reset per request** forbids reuse across requests. Every invocation must
+  recompute its state.
+- **Complete-graph isolation** reuses state only when both the complete graph
+  and the agent role match. A change anywhere in the graph creates a different
+  key, even if this particular agent's input did not change.
+- **Agent-local layout identity**, our policy, reuses state when this agent's
+  own input layout matches. Unrelated changes elsewhere in the graph do not
+  invalidate it.
+
+### How often each path was used
+
+| Policy | Recomputed from prompt | Retrieved over TCP | Reused on local GPU | Total invocations |
+|---|---:|---:|---:|---:|
+| Reset per request | 33 | 0 | 0 | 33 |
+| Complete-graph isolation | 7 | 7 | 19 | 33 |
+| Agent-local layout identity | 5 | 5 | 23 | 33 |
+
+The key comparison is between the last two rows. Complete-graph isolation
+performed seven dense prefills. The layout-aware policy recognized that two of
+those states were still valid because the corresponding agents' local inputs
+had not changed, even though another part of the graph had changed. It
+therefore reduced dense prefills from seven to five and increased GPU-local
+hits from 19 to 23.
+
+### Time required to make the KV state ready
+
+| Policy | Average per invocation | p95 per invocation | Sum across 33 invocations |
+|---|---:|---:|---:|
+| Reset per request | 48.085 ms | 67.262 ms | 1,586.812 ms |
+| Complete-graph isolation | 14.686 ms | 44.951 ms | 484.648 ms |
+| Agent-local layout identity | 11.315 ms | 47.707 ms | 373.405 ms |
+
+These columns measure **state-readiness time**, not full request latency:
+
+- **Average** is the mean time required to obtain a valid state across all 33
+  invocations.
+- **p95** is a tail measurement: 95% of the observed invocations completed
+  their state-acquisition path within this time.
+- **Sum** adds the state-readiness time of all 33 invocations and is useful for
+  comparing how much work the complete trace required.
+
+The measurement ends when the KV state is ready on the GPU. It does not include
+subsequent token generation, the rest of the multi-agent workflow, or final
+answer generation. It is therefore neither full TTFT nor end-to-end request
+latency.
 
 All 99 state acquisitions passed the embedded layout-identity and prompt-token
-checks. Under the layout-aware policy, the median dense-prefill path was
-47.707 ms, while the median localhost remote-hit path was 20.890 ms. A
-GPU-local hit took approximately 0.002 ms at the state-manager boundary.
+checks. Under the layout-aware policy, a dense prefill took 47.707 ms at the
+median, while a localhost remote hit took 20.890 ms. A GPU-local hit took
+approximately 0.002 ms at the state-manager boundary.
 
 For this trace, agent-local layout identity:
 
@@ -90,9 +149,12 @@ For this trace, agent-local layout identity:
   every request.
 
 The p95 result requires caution. Layout-aware reuse produced a slightly higher
-p95 than complete-graph isolation in this small sample, even though it lowered
-the number of prefills, mean time, and total time. The current data therefore
-do not demonstrate a general tail-latency improvement.
+p95 than complete-graph isolation: 47.707 ms versus 44.951 ms. This is not
+inconsistent with its lower mean and summed time. The trace contains only 33
+invocations per policy, and the relatively few dense prefills have normal
+runtime variation. The current data therefore support a reduction in repeated
+prefill work and aggregate state-readiness time, but they do not demonstrate a
+general tail-latency improvement.
 
 ## Conclusions Supported by the Current Evidence
 
